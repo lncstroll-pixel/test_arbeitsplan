@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import easyocr
+import numpy as np
+from PIL import Image
 
 # --- SEITENKONFIGURATION ---
 st.set_page_config(page_title="Studi-Schichtplaner", page_icon="📅", layout="wide")
@@ -77,17 +80,29 @@ elif auswahl == "📸 Plan hochladen (OCR)":
     uploaded_file = st.file_uploader("Foto des Aushangs hochladen...", type=["jpg", "png", "jpeg"])
     
     if uploaded_file is not None:
-        st.image(uploaded_file, caption="Hochgeladenes Bild", width=300)
-        st.info("🤖 Simuliere OCR-Auslesung... (Hier würde normalerweise die KI laufen)")
+        st.image(uploaded_file, caption="Hochgeladenes Bild", width=500)
         
-        # Simuliertes OCR-Ergebnis, das der Nutzer korrigieren kann
-        ocr_daten = pd.DataFrame([
-            {"Datum": "2026-03-27", "Abteilung": "Kasse", "Mitarbeiter": "FehlerhafterName123", "Zeit": "08:00 - 16:00"},
-            {"Datum": "2026-03-27", "Abteilung": "Lager", "Mitarbeiter": "Lisa", "Zeit": "10:00 - 18:00"}
-        ])
+        with st.spinner("KI liest den Plan aus... Bitte warten..."):
+            # --- HIER WIRD DIE FUNKTION AUFGERUFEN ---
+            reader = easyocr.Reader(['de'])
+            image = Image.open(uploaded_file)
+            result = reader.readtext(np.array(image))
+            
+            # Wir extrahieren einfach alle Texte als Liste für die Korrektur
+            extrahiert = [res[1] for res in result]
+            
+        st.success("Auslesung fertig!")
         
-        st.warning("✏️ Bitte korrigiere eventuelle Lesefehler der KI in der Tabelle unten:")
-        korrigierte_daten = st.data_editor(ocr_daten, use_container_width=True)
+        # Vorschlag für die manuelle Korrektur-Tabelle
+        st.subheader("Vorschau der erkannten Daten")
+        # Wir erstellen eine einfache Tabelle aus den Funden
+        df_ocr = pd.DataFrame({"Erkannter Text": extrahiert})
+        
+        # Der Nutzer kann hier jetzt die Namen und Zeiten korrigieren
+        korrigierte_daten = st.data_editor(df_ocr, num_rows="dynamic")
+        
+        if st.button("Speichern"):
+            st.info("Daten wurden (simuliert) gespeichert!")
         
         if st.button("✅ Korrigierten Plan im System speichern"):
             st.session_state.schichten = pd.concat([st.session_state.schichten, korrigierte_daten], ignore_index=True)
