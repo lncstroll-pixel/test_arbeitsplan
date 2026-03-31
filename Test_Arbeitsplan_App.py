@@ -8,131 +8,114 @@ from datetime import datetime
 # --- SEITENKONFIGURATION ---
 st.set_page_config(page_title="Studi-Schicht-Hub", page_icon="📅", layout="wide")
 
-# --- INITIALISIERUNG DER DATENBANK (Session State) ---
-# Das sorgt dafür, dass Daten während der Sitzung erhalten bleiben
-if "abteilungen" not in st.session_state:
-    st.session_state.abteilungen = ["Kasse", "Lager", "Kundenservice", "Gastronomie"]
-
+# --- INITIALISIERUNG DER DATENBANK ---
 if "schichten" not in st.session_state:
-    # Start-Daten
-    st.session_state.schichten = pd.DataFrame([
-        {"Datum": "2026-03-30", "Abteilung": "Kasse", "Mitarbeiter": "Alex", "Zeit": "08:00 - 16:00"},
-        {"Datum": "2026-03-30", "Abteilung": "Lager", "Mitarbeiter": "Sam", "Zeit": "12:00 - 20:00"}
-    ])
+    st.session_state.schichten = pd.DataFrame(columns=["Datum", "Abteilung", "Mitarbeiter", "Zeit"])
 
-if "marktplatz" not in st.session_state:
-    st.session_state.marktplatz = []
-
-# --- FUNKTION: OCR AUSFÜHRUNG ---
-@st.cache_resource # Verhindert, dass das KI-Modell bei jedem Klick neu geladen wird
+@st.cache_resource
 def get_ocr_reader():
     return easyocr.Reader(['de'])
 
+# --- NEU: VERBESSERTE LOGIK FÜR ZEILEN-ERKENNUNG ---
+def verarbeite_tabelle(ocr_result):
+    if not ocr_result:
+        return []
+
+    # 1. Sortiere alle Funde nach der Y-Koordinate (von oben nach unten)
+    ocr_result.sort(key=lambda x: x[0][0][1])
+
+    rows = []
+    current_row = []
+    last_y = ocr_result[0][0][0][1]
+    y_threshold = 25  # Toleranz in Pixeln: Was auf einer Höhe liegt, ist eine Zeile
+
+    for res in ocr_result:
+        bbox, text, prob = res
+        y_top = bbox[0][1]
+        x_left = bbox[0][0]
+
+        # Wenn der Text deutlich tiefer liegt als der letzte -> Neue Zeile starten
+        if abs(y_top - last_y) > y_threshold:
+            # Bevor wir die Zeile speichern, sortieren wir sie von links nach rechts (X-Achse)
+            current_row.sort(key=lambda x: x[0])
+            rows.append([item[1] for item in current_row])
+            current_row = []
+            last_y = y_top
+        
+        current_row.append((x_left, text))
+
+    # Letzte Zeile nicht vergessen
+    if current_row:
+        current_row.sort(key=lambda x: x[0])
+        rows.append([item[1] for item in current_row])
+    
+    return rows
+
 # --- NAVIGATION ---
 st.sidebar.title("📌 Menü")
-auswahl = st.sidebar.radio("Gehe zu:", ["📅 Digitaler Dienstplan", "🛒 Schicht-Marktplatz", "📸 Plan hochladen (OCR)"])
+auswahl = st.sidebar.radio("Gehe zu:", ["📅 Dienstplan", "📸 Plan hochladen (OCR)"])
 
-# --- 1. DIGITALER DIENSTPLAN ---
-if auswahl == "📅 Digitaler Dienstplan":
+# --- 1. DIENSTPLAN ANZEIGE ---
+if auswahl == "📅 Dienstplan":
     st.header("📅 Aktueller Arbeitsplan")
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        abt_filter = st.selectbox("Abteilung filtern:", ["Alle"] + st.session_state.abteilungen)
-    
-    daten = st.session_state.schichten
-    if abt_filter != "Alle":
-        daten = daten[daten["Abteilung"] == abt_filter]
-        
-    st.dataframe(daten, use_container_width=True, hide_index=True)
-
-# --- 2. MARKTPLATZ ---
-elif auswahl == "🛒 Schicht-Marktplatz":
-    st.header("🛒 Schicht-Marktplatz")
-    st.write("Biete hier Schichten an, die du nicht wahrnehmen kannst.")
-    
-    with st.expander("➕ Neue Schicht zum Tausch anbieten"):
-        name = st.text_input("Dein Name")
-        datum = st.date_input("Datum der Schicht", value=datetime.now())
-        zeit = st.text_input("Zeitraum (z.B. 08:00 - 16:00)")
-        grund = st.text_area("Grund / Info für Kollegen")
-        
-        if st.button("Auf Marktplatz posten"):
-            if name and zeit:
-                st.session_state.marktplatz.append({
-                    "Von": name,
-                    "Datum": str(datum),
-                    "Zeit": zeit,
-                    "Grund": grund,
-                    "Status": "Offen"
-                })
-                st.success("Erfolgreich inseriert!")
-            else:
-                st.error("Bitte Name und Zeit angeben.")
-
-    st.subheader("Offene Angebote")
-    if not st.session_state.marktplatz:
-        st.info("Keine offenen Schicht-Angebote vorhanden.")
+    if st.session_state.schichten.empty:
+        st.info("Noch keine Daten vorhanden. Lade einen Plan unter 'OCR' hoch!")
     else:
-        for idx, angebot in enumerate(st.session_state.marktplatz):
-            if angebot["Status"] == "Offen":
-                with st.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    c1.write(f"👤 **{angebot['Von']}** bietet Schicht am **{angebot['Datum']}** ({angebot['Zeit']})")
-                    c1.caption(f"Grund: {angebot['Grund']}")
-                    if c2.button("Übernehmen", key=f"btn_{idx}"):
-                        angebot["Status"] = "Übernommen"
-                        st.success(f"Du hast die Schicht von {angebot['Von']} übernommen!")
-                        st.rerun()
+        st.dataframe(st.session_state.schichten, use_container_width=True, hide_index=True)
 
-# --- 3. OCR SCANNER (BILD ZU TABELLE) ---
+# --- 2. VERBESSERTER OCR SCANNER ---
 elif auswahl == "📸 Plan hochladen (OCR)":
-    st.header("📸 Foto-Upload & Digitalisierung")
-    st.info("Lade ein Foto des ausgehängten Plans hoch. Die KI versucht die Texte zu erkennen.")
+    st.header("📸 Intelligente Tabellen-Erkennung")
+    st.write("Diese Version sortiert die Funde nach Zeilen und Spalten.")
     
-    uploaded_file = st.file_uploader("Bild auswählen...", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Bild oder Screenshot hochladen...", type=["jpg", "png", "jpeg"])
     
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
-        st.image(image, caption="Hochgeladenes Foto", width=400)
+        st.image(image, caption="Vorschau", width=500)
         
-        if st.button("🔍 Plan jetzt auslesen"):
-            with st.spinner("KI analysiert das Bild... (Das kann beim ersten Mal dauern)"):
-                try:
-                    reader = get_ocr_reader()
-                    # Bild in Numpy-Array für EasyOCR umwandeln
-                    img_array = np.array(image)
-                    result = reader.readtext(img_array)
-                    
-                    # Texte extrahieren
-                    extrahiert = [res[1] for res in result]
-                    
-                    # Erstelle eine temporäre Tabelle für die Bearbeitung
-                    st.session_state.temp_ocr_df = pd.DataFrame({
-                        "Datum": ["Bitte eintragen"] * len(extrahiert),
-                        "Abteilung": ["Kasse"] * len(extrahiert),
-                        "Mitarbeiter_Erkannt": extrahiert,
-                        "Zeit": [""] * len(extrahiert)
-                    })
-                    st.success("Auslesung beendet! Bitte korrigiere die Daten unten.")
-                except Exception as e:
-                    st.error(f"Fehler bei der OCR: {e}")
+        if st.button("🔍 Plan analysieren"):
+            with st.spinner("KI sortiert Zeilen und Spalten..."):
+                reader = get_ocr_reader()
+                result = reader.readtext(np.array(image))
+                
+                # Nutze die neue Koordinaten-Logik
+                strukturierte_zeilen = verarbeite_tabelle(result)
+                
+                # Wir bereiten die Daten für den Editor auf
+                formatiert = []
+                for zeile in strukturierte_zeilen:
+                    # Wir versuchen, den Namen (erstes Element) und die Zeit zu trennen
+                    name = zeile[0] if len(zeile) > 0 else ""
+                    rest = " | ".join(zeile[1:]) if len(zeile) > 1 else ""
+                    formatiert.append({"Mitarbeiter": name, "Erkannte_Daten": rest, "Wochentag": "Montag"})
 
-        # Editor-Bereich, wenn Daten vorhanden sind
-        if "temp_ocr_df" in st.session_state:
-            st.subheader("✏️ Manuelle Korrektur & Zuweisung")
-            st.write("Die KI hat folgende Texte gefunden. Bitte korrigiere sie für den finalen Plan:")
+                st.session_state.temp_df = pd.DataFrame(formatiert)
+
+        if "temp_df" in st.session_state:
+            st.subheader("✏️ Ergebnis prüfen")
+            st.info("Klicke in die Zellen, um Fehler der KI direkt zu korrigieren.")
             
+            # Editor mit Dropdown für Wochentage
             edited_df = st.data_editor(
-                st.session_state.temp_ocr_df, 
+                st.session_state.temp_df,
+                column_config={
+                    "Wochentag": st.column_config.SelectboxColumn(
+                        "Wochentag",
+                        options=["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+                    )
+                },
                 num_rows="dynamic",
                 use_container_width=True
             )
             
-            if st.button("💾 Final in Datenbank speichern"):
-                # Hier führen wir die neuen Daten mit dem bestehenden Plan zusammen
-                final_data = edited_df.rename(columns={"Mitarbeiter_Erkannt": "Mitarbeiter"})
-                st.session_state.schichten = pd.concat([st.session_state.schichten, final_data], ignore_index=True)
-                st.success("Daten wurden zum digitalen Dienstplan hinzugefügt!")
-                # Temp-Daten löschen
-                del st.session_state.temp_ocr_df
+            if st.button("💾 In Dienstplan übernehmen"):
+                # Umwandeln in das Hauptformat
+                neue_daten = edited_df[["Wochentag", "Mitarbeiter", "Erkannte_Daten"]].rename(
+                    columns={"Wochentag": "Datum", "Erkannte_Daten": "Zeit"}
+                )
+                neue_daten["Abteilung"] = "Zuweisen..."
+                
+                st.session_state.schichten = pd.concat([st.session_state.schichten, neue_daten], ignore_index=True)
+                st.success("Daten gespeichert!")
+                del st.session_state.temp_df
