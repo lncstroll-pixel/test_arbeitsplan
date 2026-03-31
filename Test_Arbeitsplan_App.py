@@ -1,109 +1,138 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-import easyocr
 import numpy as np
+import easyocr
 from PIL import Image
+from datetime import datetime
 
 # --- SEITENKONFIGURATION ---
-st.set_page_config(page_title="Studi-Schichtplaner", page_icon="📅", layout="wide")
+st.set_page_config(page_title="Studi-Schicht-Hub", page_icon="📅", layout="wide")
 
-# --- SIMULIERTE DATENBANK (Session State) ---
+# --- INITIALISIERUNG DER DATENBANK (Session State) ---
+# Das sorgt dafür, dass Daten während der Sitzung erhalten bleiben
 if "abteilungen" not in st.session_state:
-    st.session_state.abteilungen = ["Kasse", "Lager", "Kundenservice"]
+    st.session_state.abteilungen = ["Kasse", "Lager", "Kundenservice", "Gastronomie"]
 
 if "schichten" not in st.session_state:
-    # Beispiel-Daten für den digitalisierten Plan
+    # Start-Daten
     st.session_state.schichten = pd.DataFrame([
-        {"Datum": "2026-03-26", "Abteilung": "Kasse", "Mitarbeiter": "Alex", "Zeit": "08:00 - 16:00"},
-        {"Datum": "2026-03-26", "Abteilung": "Lager", "Mitarbeiter": "Sam", "Zeit": "12:00 - 20:00"}
+        {"Datum": "2026-03-30", "Abteilung": "Kasse", "Mitarbeiter": "Alex", "Zeit": "08:00 - 16:00"},
+        {"Datum": "2026-03-30", "Abteilung": "Lager", "Mitarbeiter": "Sam", "Zeit": "12:00 - 20:00"}
     ])
 
 if "marktplatz" not in st.session_state:
     st.session_state.marktplatz = []
 
+# --- FUNKTION: OCR AUSFÜHRUNG ---
+@st.cache_resource # Verhindert, dass das KI-Modell bei jedem Klick neu geladen wird
+def get_ocr_reader():
+    return easyocr.Reader(['de'])
+
 # --- NAVIGATION ---
-st.title("🚀 Studi-Schicht-Hub")
-auswahl = st.sidebar.radio("Navigation", ["📅 Digitaler Dienstplan", "🛒 Schicht-Marktplatz", "📸 Plan hochladen (OCR)"])
+st.sidebar.title("📌 Menü")
+auswahl = st.sidebar.radio("Gehe zu:", ["📅 Digitaler Dienstplan", "🛒 Schicht-Marktplatz", "📸 Plan hochladen (OCR)"])
 
 # --- 1. DIGITALER DIENSTPLAN ---
 if auswahl == "📅 Digitaler Dienstplan":
-    st.header("Aktueller Arbeitsplan")
+    st.header("📅 Aktueller Arbeitsplan")
     
-    # Abteilungs-Filter (Sub-Threads)
-    abt_filter = st.selectbox("Abteilung filtern:", ["Alle"] + st.session_state.abteilungen)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        abt_filter = st.selectbox("Abteilung filtern:", ["Alle"] + st.session_state.abteilungen)
     
     daten = st.session_state.schichten
     if abt_filter != "Alle":
         daten = daten[daten["Abteilung"] == abt_filter]
         
-    st.dataframe(daten, use_container_width=True)
+    st.dataframe(daten, use_container_width=True, hide_index=True)
 
 # --- 2. MARKTPLATZ ---
 elif auswahl == "🛒 Schicht-Marktplatz":
-    st.header("Schicht-Marktplatz (Biete/Suche)")
+    st.header("🛒 Schicht-Marktplatz")
+    st.write("Biete hier Schichten an, die du nicht wahrnehmen kannst.")
     
-    # Schicht anbieten
-    with st.expander("➕ Schicht zum Tausch anbieten"):
-        offene_schichten = st.session_state.schichten["Mitarbeiter"].unique()
-        name = st.selectbox("Wer bist du?", offene_schichten)
-        datum = st.date_input("Welcher Tag?")
-        grund = st.text_input("Notiz (z.B. Klausur)")
+    with st.expander("➕ Neue Schicht zum Tausch anbieten"):
+        name = st.text_input("Dein Name")
+        datum = st.date_input("Datum der Schicht", value=datetime.now())
+        zeit = st.text_input("Zeitraum (z.B. 08:00 - 16:00)")
+        grund = st.text_area("Grund / Info für Kollegen")
         
-        if st.button("Schicht freigeben"):
-            st.session_state.marktplatz.append({
-                "Von": name,
-                "Datum": str(datum),
-                "Grund": grund,
-                "Status": "Offen"
-            })
-            st.success("Schicht auf dem Marktplatz gepostet!")
+        if st.button("Auf Marktplatz posten"):
+            if name and zeit:
+                st.session_state.marktplatz.append({
+                    "Von": name,
+                    "Datum": str(datum),
+                    "Zeit": zeit,
+                    "Grund": grund,
+                    "Status": "Offen"
+                })
+                st.success("Erfolgreich inseriert!")
+            else:
+                st.error("Bitte Name und Zeit angeben.")
 
-    # Marktplatz anzeigen
     st.subheader("Offene Angebote")
     if not st.session_state.marktplatz:
-        st.info("Derzeit keine Schichten im Angebot. Alles super!")
+        st.info("Keine offenen Schicht-Angebote vorhanden.")
     else:
         for idx, angebot in enumerate(st.session_state.marktplatz):
             if angebot["Status"] == "Offen":
-                col1, col2 = st.columns([3, 1])
-                col1.write(f"**{angebot['Von']}** gibt Schicht am **{angebot['Datum']}** ab. (Grund: {angebot['Grund']})")
-                if col2.button("Übernehmen", key=f"take_{idx}"):
-                    angebot["Status"] = "Übernommen"
-                    st.success("Schicht erfolgreich übernommen!")
-                    st.rerun()
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    c1.write(f"👤 **{angebot['Von']}** bietet Schicht am **{angebot['Datum']}** ({angebot['Zeit']})")
+                    c1.caption(f"Grund: {angebot['Grund']}")
+                    if c2.button("Übernehmen", key=f"btn_{idx}"):
+                        angebot["Status"] = "Übernommen"
+                        st.success(f"Du hast die Schicht von {angebot['Von']} übernommen!")
+                        st.rerun()
 
-# --- 3. OCR SCANNER (MANUELLE KORREKTUR) ---
+# --- 3. OCR SCANNER (BILD ZU TABELLE) ---
 elif auswahl == "📸 Plan hochladen (OCR)":
-    st.header("Papier-Plan digitalisieren")
+    st.header("📸 Foto-Upload & Digitalisierung")
+    st.info("Lade ein Foto des ausgehängten Plans hoch. Die KI versucht die Texte zu erkennen.")
     
-    uploaded_file = st.file_uploader("Foto des Aushangs hochladen...", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Bild auswählen...", type=["jpg", "png", "jpeg"])
     
     if uploaded_file is not None:
-        st.image(uploaded_file, caption="Hochgeladenes Bild", width=500)
+        image = Image.open(uploaded_file)
+        st.image(image, caption="Hochgeladenes Foto", width=400)
         
-        with st.spinner("KI liest den Plan aus... Bitte warten..."):
-            # --- HIER WIRD DIE FUNKTION AUFGERUFEN ---
-            reader = easyocr.Reader(['de'])
-            image = Image.open(uploaded_file)
-            result = reader.readtext(np.array(image))
+        if st.button("🔍 Plan jetzt auslesen"):
+            with st.spinner("KI analysiert das Bild... (Das kann beim ersten Mal dauern)"):
+                try:
+                    reader = get_ocr_reader()
+                    # Bild in Numpy-Array für EasyOCR umwandeln
+                    img_array = np.array(image)
+                    result = reader.readtext(img_array)
+                    
+                    # Texte extrahieren
+                    extrahiert = [res[1] for res in result]
+                    
+                    # Erstelle eine temporäre Tabelle für die Bearbeitung
+                    st.session_state.temp_ocr_df = pd.DataFrame({
+                        "Datum": ["Bitte eintragen"] * len(extrahiert),
+                        "Abteilung": ["Kasse"] * len(extrahiert),
+                        "Mitarbeiter_Erkannt": extrahiert,
+                        "Zeit": [""] * len(extrahiert)
+                    })
+                    st.success("Auslesung beendet! Bitte korrigiere die Daten unten.")
+                except Exception as e:
+                    st.error(f"Fehler bei der OCR: {e}")
+
+        # Editor-Bereich, wenn Daten vorhanden sind
+        if "temp_ocr_df" in st.session_state:
+            st.subheader("✏️ Manuelle Korrektur & Zuweisung")
+            st.write("Die KI hat folgende Texte gefunden. Bitte korrigiere sie für den finalen Plan:")
             
-            # Wir extrahieren einfach alle Texte als Liste für die Korrektur
-            extrahiert = [res[1] for res in result]
+            edited_df = st.data_editor(
+                st.session_state.temp_ocr_df, 
+                num_rows="dynamic",
+                use_container_width=True
+            )
             
-        st.success("Auslesung fertig!")
-        
-        # Vorschlag für die manuelle Korrektur-Tabelle
-        st.subheader("Vorschau der erkannten Daten")
-        # Wir erstellen eine einfache Tabelle aus den Funden
-        df_ocr = pd.DataFrame({"Erkannter Text": extrahiert})
-        
-        # Der Nutzer kann hier jetzt die Namen und Zeiten korrigieren
-        korrigierte_daten = st.data_editor(df_ocr, num_rows="dynamic")
-        
-        if st.button("Speichern"):
-            st.info("Daten wurden (simuliert) gespeichert!")
-        
-        if st.button("✅ Korrigierten Plan im System speichern"):
-            st.session_state.schichten = pd.concat([st.session_state.schichten, korrigierte_daten], ignore_index=True)
-            st.success("Plan erfolgreich integriert und für alle sichtbar!")
+            if st.button("💾 Final in Datenbank speichern"):
+                # Hier führen wir die neuen Daten mit dem bestehenden Plan zusammen
+                final_data = edited_df.rename(columns={"Mitarbeiter_Erkannt": "Mitarbeiter"})
+                st.session_state.schichten = pd.concat([st.session_state.schichten, final_data], ignore_index=True)
+                st.success("Daten wurden zum digitalen Dienstplan hinzugefügt!")
+                # Temp-Daten löschen
+                del st.session_state.temp_ocr_df
