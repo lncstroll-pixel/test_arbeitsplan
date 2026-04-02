@@ -16,27 +16,25 @@ if "schichten" not in st.session_state:
 def get_ocr_reader():
     return easyocr.Reader(['de'])
 
-# --- NEU: VERBESSERTE LOGIK FÜR ZEILEN-ERKENNUNG ---
+# --- LOGIK FÜR ZEILEN-ERKENNUNG ---
 def verarbeite_tabelle(ocr_result):
     if not ocr_result:
         return []
 
-    # 1. Sortiere alle Funde nach der Y-Koordinate (von oben nach unten)
+    # Sortiere alle Funde nach der Y-Koordinate (von oben nach unten)
     ocr_result.sort(key=lambda x: x[0][0][1])
 
     rows = []
     current_row = []
     last_y = ocr_result[0][0][0][1]
-    y_threshold = 25  # Toleranz in Pixeln: Was auf einer Höhe liegt, ist eine Zeile
+    y_threshold = 25  # Pixel-Toleranz für eine Zeile
 
     for res in ocr_result:
         bbox, text, prob = res
         y_top = bbox[0][1]
         x_left = bbox[0][0]
 
-        # Wenn der Text deutlich tiefer liegt als der letzte -> Neue Zeile starten
         if abs(y_top - last_y) > y_threshold:
-            # Bevor wir die Zeile speichern, sortieren wir sie von links nach rechts (X-Achse)
             current_row.sort(key=lambda x: x[0])
             rows.append([item[1] for item in current_row])
             current_row = []
@@ -44,7 +42,6 @@ def verarbeite_tabelle(ocr_result):
         
         current_row.append((x_left, text))
 
-    # Letzte Zeile nicht vergessen
     if current_row:
         current_row.sort(key=lambda x: x[0])
         rows.append([item[1] for item in current_row])
@@ -61,12 +58,13 @@ if auswahl == "📅 Dienstplan":
     if st.session_state.schichten.empty:
         st.info("Noch keine Daten vorhanden. Lade einen Plan unter 'OCR' hoch!")
     else:
+        # Anzeige der flachen Liste (Datenbank-Stil)
         st.dataframe(st.session_state.schichten, use_container_width=True, hide_index=True)
 
-# --- 2. VERBESSERTER OCR SCANNER ---
+# --- 2. VERBESSERTER OCR SCANNER (MIT WOCHENTAG-SPALTEN) ---
 elif auswahl == "📸 Plan hochladen (OCR)":
     st.header("📸 Intelligente Tabellen-Erkennung")
-    st.write("Diese Version sortiert die Funde nach Zeilen und Spalten.")
+    st.write("Die KI ordnet erkannte Zeiten direkt den Wochentagen zu.")
     
     uploaded_file = st.file_uploader("Bild oder Screenshot hochladen...", type=["jpg", "png", "jpeg"])
     
@@ -75,47 +73,70 @@ elif auswahl == "📸 Plan hochladen (OCR)":
         st.image(image, caption="Vorschau", width=500)
         
         if st.button("🔍 Plan analysieren"):
-            with st.spinner("KI sortiert Zeilen und Spalten..."):
+            with st.spinner("KI extrahiert Daten in Tabellenform..."):
                 reader = get_ocr_reader()
                 result = reader.readtext(np.array(image))
                 
-                # Nutze die neue Koordinaten-Logik
+                # Zeilenweise Strukturierung
                 strukturierte_zeilen = verarbeite_tabelle(result)
                 
-                # Wir bereiten die Daten für den Editor auf
-                formatiert = []
-                for zeile in strukturierte_zeilen:
-                    # Wir versuchen, den Namen (erstes Element) und die Zeit zu trennen
-                    name = zeile[0] if len(zeile) > 0 else ""
-                    rest = " | ".join(zeile[1:]) if len(zeile) > 1 else ""
-                    formatiert.append({"Mitarbeiter": name, "Erkannte_Daten": rest, "Wochentag": "Montag"})
+                # Definition der festen Spalten
+                spalten = ["Mitarbeiter", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+                final_rows = []
 
-                st.session_state.temp_df = pd.DataFrame(formatiert)
+                for zeile in strukturierte_zeilen:
+                    # Wir erstellen ein leeres Wörterbuch für die Zeile
+                    new_row = {s: "" for s in spalten}
+                    
+                    if len(zeile) > 0:
+                        # Erstes erkanntes Element der Zeile = Mitarbeitername
+                        new_row["Mitarbeiter"] = zeile[0]
+                        
+                        # Die restlichen Elemente werden den Tagen Mo-So zugeordnet
+                        for i, schicht_text in enumerate(zeile[1:]):
+                            if i < 7: # Begrenzung auf 7 Tage
+                                tag_name = spalten[i+1]
+                                new_row[tag_name] = schicht_text
+                        
+                        # Nur Zeilen hinzufügen, die nicht leer sind
+                        if new_row["Mitarbeiter"]:
+                            final_rows.append(new_row)
+
+                st.session_state.temp_df = pd.DataFrame(final_rows)
 
         if "temp_df" in st.session_state:
-            st.subheader("✏️ Ergebnis prüfen")
-            st.info("Klicke in die Zellen, um Fehler der KI direkt zu korrigieren.")
+            st.subheader("✏️ Ergebnis prüfen & korrigieren")
+            st.info("Hier kannst du Zeiten einfach korrigieren oder in die richtige Spalte verschieben.")
             
-            # Editor mit Dropdown für Wochentage
+            # Editor zeigt jetzt die Mo-So Matrix an
             edited_df = st.data_editor(
                 st.session_state.temp_df,
-                column_config={
-                    "Wochentag": st.column_config.SelectboxColumn(
-                        "Wochentag",
-                        options=["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
-                    )
-                },
-                num_rows="dynamic",
-                use_container_width=True
+                use_container_width=True,
+                num_rows="dynamic"
             )
             
             if st.button("💾 In Dienstplan übernehmen"):
-                # Umwandeln in das Hauptformat
-                neue_daten = edited_df[["Wochentag", "Mitarbeiter", "Erkannte_Daten"]].rename(
-                    columns={"Wochentag": "Datum", "Erkannte_Daten": "Zeit"}
-                )
-                neue_daten["Abteilung"] = "Zuweisen..."
+                # Konvertierung der Matrix zurück in die Datenbank-Liste
+                neue_eintraege = []
+                wochentage = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
                 
-                st.session_state.schichten = pd.concat([st.session_state.schichten, neue_daten], ignore_index=True)
-                st.success("Daten gespeichert!")
-                del st.session_state.temp_df
+                for _, row in edited_df.iterrows():
+                    for tag in wochentage:
+                        zeit_wert = str(row[tag]).strip()
+                        # Nur speichern, wenn ein Text/Zeit in der Zelle steht
+                        if zeit_wert and zeit_wert != "nan" and zeit_wert != "":
+                            neue_eintraege.append({
+                                "Datum": tag, 
+                                "Abteilung": "Zuweisen...",
+                                "Mitarbeiter": row["Mitarbeiter"],
+                                "Zeit": zeit_wert
+                            })
+                
+                if neue_eintraege:
+                    neuer_df = pd.DataFrame(neue_eintraege)
+                    st.session_state.schichten = pd.concat([st.session_state.schichten, neuer_df], ignore_index=True)
+                    st.success(f"{len(neue_eintraege)} Schichten erfolgreich gespeichert!")
+                    del st.session_state.temp_df
+                    st.rerun()
+                else:
+                    st.warning("Keine Daten zum Speichern gefunden.")
